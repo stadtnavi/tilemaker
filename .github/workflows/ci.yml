@@ -6,7 +6,7 @@ on:
     branches: [ master ]
 
 env:
-  AREA: liechtenstein
+  AREA: denmark
 
 jobs:
   build:
@@ -26,13 +26,13 @@ jobs:
         make -j 2
         sudo make install
 
-    - name: Build openmaptiles-compatible mbtiles files of Liechtenstein
+    - name: Build openmaptiles-compatible mbtiles files of Denmark
       run: |
         curl http://download.geofabrik.de/europe/${AREA}-latest.osm.pbf -o ${AREA}.osm.pbf
         tilemaker ${AREA}.osm.pbf --config=resources/config-openmaptiles.json --process=resources/process-openmaptiles.lua --output=${AREA}.mbtiles --verbose
 
   Github-Action:
-    name: Generate mbtiles with Github Action
+    name: Build docker image and generate mbtiles with Github Action
     runs-on: ubuntu-latest
 
     steps:
@@ -45,5 +45,5 @@ jobs:
     - name: Build openmaptiles-compatible mbtiles files of given area
       uses: ./
       with:
-        input: ${{ env.AREA }}.osm.pbf 
+        input: ${{ env.AREA }}.osm.pbf
         output: ${{ env.AREA }}.mbtiles
