@@ -22,6 +22,7 @@ extern "C" {
     #include "lualib.h"
     #include "lauxlib.h"
 }
+
 #include "kaguya.hpp"
 
 
@@ -41,7 +42,7 @@ public:
 	// ----	initialization routines
 
 	OsmLuaProcessing(
-        OSMStore &osmStore,
+        OSMStore const *indexStore, OSMStore &osmStore,
         const class Config &configIn, class LayerDefinition &layers, 
 		const std::string &luaFile,
 		const class ShpMemTiles &shpMemTiles, 
@@ -57,30 +58,21 @@ public:
 	// Shapefile tag remapping
 	bool canRemapShapefiles();
 	kaguya::LuaTable newTable();
-	virtual kaguya::LuaTable remapAttributes(kaguya::LuaTable& in_table);
+	virtual kaguya::LuaTable remapAttributes(kaguya::LuaTable& in_table, const std::string &layerName);
 
 	// ----	Data loading methods
 
-	/// \brief Called when data loading is starting
-	virtual void startOsmData();
-
-	virtual void everyNode(NodeID id, LatpLon node);
-
 	/// \brief We are now processing a significant node
-	virtual void setNode(NodeID id, LatpLon node, const std::map<std::string, std::string> &tags);
+	virtual void setNode(NodeID id, LatpLon node, const tag_map_t &tags);
 
 	/// \brief We are now processing a way
-	virtual void setWay(Way *way, NodeVec *nodeVecPtr, bool inRelation, const std::map<std::string, std::string> &tags);
+	virtual void setWay(WayID wayId, OSMStore::handle_t handle, const tag_map_t &tags);
 
 	/** \brief We are now processing a relation
 	 * (note that we store relations as ways with artificial IDs, and that
 	 *  we use decrementing positive IDs to give a bit more space for way IDs)
 	 */
-	virtual void setRelation(Relation *relation, WayVec *outerWayVecPtr, WayVec *innerWayVecPtr,
-		const std::map<std::string, std::string> &tags);
-
-	/// \brief Called when data loading for a single file is done
-	virtual void endOsmData();
+	virtual void setRelation(int64_t relationId, OSMStore::handle_t relationHandle, const tag_map_t &tags);
 
 	// ----	Metadata queries called from Lua
 
@@ -132,8 +124,11 @@ public:
 	
 	// Set attributes in a vector tile's Attributes table
 	void Attribute(const std::string &key, const std::string &val);
+	void AttributeWithMinZoom(const std::string &key, const std::string &val, const char minzoom);
 	void AttributeNumeric(const std::string &key, const float val);
+	void AttributeNumericWithMinZoom(const std::string &key, const float val, const char minzoom);
 	void AttributeBoolean(const std::string &key, const bool val);
+	void AttributeBooleanWithMinZoom(const std::string &key, const bool val, const char minzoom);
 	void MinZoom(const unsigned z);
 
 	// ----	vector_layers metadata entry
@@ -152,6 +147,7 @@ public:
 
 	inline AttributeStore &getAttributeStore() { return attributeStore; }
 
+	void setIndexStore(OSMStore const *indexStore) { this->indexStore = indexStore; }
 private:
 	/// Internal: clear current cached state
 	inline void reset() {
@@ -166,6 +162,7 @@ private:
 		lon1=a; latp1=b; lon2=c; latp2=d;
 	}
 	
+	OSMStore const *indexStore;				// global OSM for reading input
 	OSMStore &osmStore;						// global OSM store
 
 	kaguya::State luaState;
@@ -177,11 +174,11 @@ private:
 	uint64_t osmID;							///< ID of OSM object (relations have decrementing way IDs)
 	int64_t originalOsmID;					///< Original OSM object ID
 	WayID newWayID = MAX_WAY_ID;			///< Decrementing new ID for relations
-	bool isWay, isRelation;					///< Way, node, relation?
+	bool isWay, isRelation, isClosed;		///< Way, node, relation?
 
 	int32_t lon1,latp1,lon2,latp2;			///< Start/end co-ordinates of OSM object
-	NodeVec *nodeVec;						///< node vector
-	WayVec *outerWayVec, *innerWayVec;		///< way vectors
+	OSMStore::handle_t nodeVecHandle;
+	OSMStore::handle_t relationHandle;
 
 	Linestring linestringCache;
 	bool linestringInited;
@@ -194,7 +191,7 @@ private:
 	class LayerDefinition &layers;
 	
 	std::deque<std::pair<OutputObjectRef, AttributeStore::key_value_set_entry_t> > outputs;			///< All output objects that have been created
-	std::map<std::string, std::string> currentTags;
+	boost::container::flat_map<std::string, std::string> currentTags;
 
 };
 

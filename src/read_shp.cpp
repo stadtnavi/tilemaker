@@ -51,7 +51,7 @@ void addShapefileAttributes(
 		}
 
 		// Call remap function
-		kaguya::LuaTable out_table = osmLuaProcessing.remapAttributes(in_table);
+		kaguya::LuaTable out_table = osmLuaProcessing.remapAttributes(in_table, layers.layers[oo->layer].name);
 
 		auto &attributeStore = osmLuaProcessing.getAttributeStore();
 		AttributeStore::key_value_set_entry_t attributes;
@@ -64,6 +64,7 @@ void addShapefileAttributes(
 				v.set_string_value(static_cast<std::string const&>(val));
 				layers.layers[oo->layer].attributeMap[key] = 0;
 			} else if (val.isType<int>()) {
+				if (key=="_minzoom") { oo->setMinZoom(val); continue; }
 				v.set_float_value(val);
 				layers.layers[oo->layer].attributeMap[key] = 1;
 			} else if (val.isType<double>()) {
@@ -77,7 +78,7 @@ void addShapefileAttributes(
 				std::cout << "Didn't recognise Lua output type: " << val << std::endl;
 			}
 
-			attributes.push_back(attributeStore.store_key_value(key, v));
+			attributes.push_back(attributeStore.store_key_value(key, v, 0));
 		}
 
 		oo->setAttributeSet(attributeStore.store_set(attributes));		
@@ -101,7 +102,7 @@ void addShapefileAttributes(
 				         break;
 			}
 			
-			attributes.push_back(attributeStore.store_key_value(key, v));
+			attributes.push_back(attributeStore.store_key_value(key, v, 0));
 		}
 
 		oo->setAttributeSet(attributeStore.store_set(attributes));		
@@ -176,7 +177,7 @@ void readShapefile(const Box &clippingBox,
 				if (indexField>-1) { name=DBFReadStringAttribute(dbf, i, indexField); hasName = true;}
 
 				auto &attributeStore = osmLuaProcessing.getAttributeStore();
-				OutputObjectRef oo = shpMemTiles.AddObject(layerNum, layerName, CACHED_POINT, p, isIndexed, hasName, name, attributeStore.empty_set());
+				OutputObjectRef oo = shpMemTiles.AddObject(layerNum, layerName, OutputGeometryType::POINT, p, isIndexed, hasName, name, attributeStore.empty_set());
 
 				addShapefileAttributes(dbf, oo, i, columnMap, columnTypeMap, layers, osmLuaProcessing);
 			}
@@ -198,7 +199,7 @@ void readShapefile(const Box &clippingBox,
 					if (indexField>-1) { name=DBFReadStringAttribute(dbf, i, indexField); hasName = true;}
 
 					auto &attributeStore = osmLuaProcessing.getAttributeStore();
-					OutputObjectRef oo = shpMemTiles.AddObject(layerNum, layerName, CACHED_LINESTRING, *it, isIndexed, hasName, name, attributeStore.empty_set());
+					OutputObjectRef oo = shpMemTiles.AddObject(layerNum, layerName, OutputGeometryType::LINESTRING, *it, isIndexed, hasName, name, attributeStore.empty_set());
 
 					addShapefileAttributes(dbf, oo, i, columnMap, columnTypeMap, layers, osmLuaProcessing);
 				}
@@ -269,7 +270,7 @@ void readShapefile(const Box &clippingBox,
 
 				// create OutputObject
 				auto &attributeStore = osmLuaProcessing.getAttributeStore();
-				OutputObjectRef oo = shpMemTiles.AddObject(layerNum, layerName, CACHED_POLYGON, out, isIndexed, hasName, name, attributeStore.empty_set());
+				OutputObjectRef oo = shpMemTiles.AddObject(layerNum, layerName, OutputGeometryType::POLYGON, out, isIndexed, hasName, name, attributeStore.empty_set());
 
 				addShapefileAttributes(dbf, oo, i, columnMap, columnTypeMap, layers, osmLuaProcessing);
 			}

@@ -4,25 +4,25 @@
 ifneq ("$(wildcard /usr/local/include/luajit-2.1/lua.h)","")
   LUA_VER := LuaJIT 2.1
   LUA_CFLAGS := -I/usr/local/include/luajit-2.1
-  LUA_LIBS := -lluajit
+  LUA_LIBS := -lluajit-5.1
   LUAJIT := 1
 
 else ifneq ("$(wildcard /usr/include/luajit-2.1/lua.h)","")
   LUA_VER := LuaJIT 2.1
   LUA_CFLAGS := -I/usr/include/luajit-2.1
-  LUA_LIBS := -lluajit
+  LUA_LIBS := -lluajit-5.1
   LUAJIT := 1
 
 else ifneq ("$(wildcard /usr/local/include/luajit-2.0/lua.h)","")
   LUA_VER := LuaJIT 2.0
   LUA_CFLAGS := -I/usr/local/include/luajit-2.0
-  LUA_LIBS := -lluajit
+  LUA_LIBS := -lluajit-5.1
   LUAJIT := 1
 
 else ifneq ("$(wildcard /usr/include/luajit-2.0/lua.h)","")
   LUA_VER := LuaJIT 2.0
   LUA_CFLAGS := -I/usr/include/luajit-2.0
-  LUA_LIBS := -lluajit
+  LUA_LIBS := -lluajit-5.1
   LUAJIT := 1
 
 else ifneq ("$(wildcard /usr/local/include/lua/lua.h)","")
@@ -61,7 +61,7 @@ endif
 
 # Main includes
 
-CXXFLAGS := -O3 -Wall -Wno-unknown-pragmas -Wno-sign-compare -std=c++11 -pthread $(CONFIG)
+CXXFLAGS := -O3 -Wall -Wno-unknown-pragmas -Wno-sign-compare -std=c++11 -pthread -fPIE $(CONFIG)
 LIB := -L/usr/local/lib -lz $(LUA_LIBS) -lboost_program_options -lsqlite3 -lboost_filesystem -lboost_system -lprotobuf -lshp
 INC := -I/usr/local/include -isystem ./include -I./src $(LUA_CFLAGS)
 
@@ -69,7 +69,7 @@ INC := -I/usr/local/include -isystem ./include -I./src $(LUA_CFLAGS)
 
 all: tilemaker
 
-tilemaker: include/osmformat.pb.o include/vector_tile.pb.o clipper/clipper.o src/mbtiles.o src/pbf_blocks.o src/coordinates.o src/osm_store.o src/helpers.o src/output_object.o src/read_shp.o src/read_pbf.o src/osm_lua_processing.o src/write_geometry.o src/shared_data.o src/tile_worker.o src/tile_data.o src/osm_mem_tiles.o src/shp_mem_tiles.o src/attribute_store.o src/tilemaker.o
+tilemaker: include/osmformat.pb.o include/vector_tile.pb.o src/mbtiles.o src/pbf_blocks.o src/coordinates.o src/osm_store.o src/helpers.o src/output_object.o src/read_shp.o src/read_pbf.o src/osm_lua_processing.o src/write_geometry.o src/shared_data.o src/tile_worker.o src/tile_data.o src/osm_mem_tiles.o src/shp_mem_tiles.o src/attribute_store.o src/tilemaker.o
 	$(CXX) $(CXXFLAGS) -o tilemaker $^ $(INC) $(LIB) $(LDFLAGS)
 
 %.o: %.cpp
@@ -85,6 +85,6 @@ install:
 	install -m 0755 tilemaker /usr/local/bin
 
 clean:
-	rm -f tilemaker src/*.o clipper/*.o include/*.o
+	rm -f tilemaker src/*.o include/*.o
 
 .PHONY: install

@@ -12,7 +12,6 @@
 #include <stdexcept>
 #include <thread>
 #include <mutex>
-#include <sys/resource.h>
 #include <chrono>
 
 // Other utilities
@@ -25,9 +24,10 @@
 #include "rapidjson/writer.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/filereadstream.h"
+#include "rapidjson/filewritestream.h"
 
-#ifdef _MSC_VER
-typedef unsigned uint;
+#ifndef _MSC_VER
+#include <sys/resource.h>
 #endif
 
 #include "geomtypes.h"
@@ -60,6 +60,124 @@ namespace geom = boost::geometry;
 // Global verbose switch
 bool verbose = false;
 
+void WriteSqliteMetadata(rapidjson::Document const &jsonConfig, SharedData &sharedData, LayerDefinition const &layers)
+{
+	// Write mbtiles 1.3+ json object
+	sharedData.mbtiles.writeMetadata("json", layers.serialiseToJSON());
+
+	// Write user-defined metadata
+	if (jsonConfig["settings"].HasMember("metadata")) {
+		const rapidjson::Value &md = jsonConfig["settings"]["metadata"];
+		for(rapidjson::Value::ConstMemberIterator it=md.MemberBegin(); it != md.MemberEnd(); ++it) {
+			if (it->value.IsString()) {
+				sharedData.mbtiles.writeMetadata(it->name.GetString(), it->value.GetString());
+			} else {
+				rapidjson::StringBuffer strbuf;
+				rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
+				it->value.Accept(writer);
+				sharedData.mbtiles.writeMetadata(it->name.GetString(), strbuf.GetString());
+			}
+		}
+	}
+	sharedData.mbtiles.closeForWriting();
+}
+
+void WriteFileMetadata(rapidjson::Document const &jsonConfig, SharedData const &sharedData, LayerDefinition const &layers)
+{
+	if(sharedData.config.compress) 
+		std::cout << "When serving compressed tiles, make sure to include 'Content-Encoding: gzip' in your webserver configuration for serving pbf files"  << std::endl;
+
+	rapidjson::Document document;
+	document.SetObject();
+
+	if (jsonConfig["settings"].HasMember("filemetadata")) {
+		const rapidjson::Value &md = jsonConfig["settings"]["filemetadata"];
+		document.CopyFrom(md, document.GetAllocator());
+	}
+
+	rapidjson::Value boundsArray(rapidjson::kArrayType);
+	boundsArray.PushBack(rapidjson::Value(sharedData.config.minLon), document.GetAllocator());
+	boundsArray.PushBack(rapidjson::Value(sharedData.config.minLat), document.GetAllocator());
+	boundsArray.PushBack(rapidjson::Value(sharedData.config.maxLon), document.GetAllocator());
+	boundsArray.PushBack(rapidjson::Value(sharedData.config.maxLat), document.GetAllocator());
+	document.AddMember("bounds", boundsArray, document.GetAllocator());
+
+	document.AddMember("name", rapidjson::Value().SetString(sharedData.config.projectName.c_str(), document.GetAllocator()), document.GetAllocator());
+	document.AddMember("version", rapidjson::Value().SetString(sharedData.config.projectVersion.c_str(), document.GetAllocator()), document.GetAllocator());
+	document.AddMember("description", rapidjson::Value().SetString(sharedData.config.projectDesc.c_str(), document.GetAllocator()), document.GetAllocator());
+	document.AddMember("minzoom", rapidjson::Value(sharedData.config.startZoom), document.GetAllocator());
+	document.AddMember("maxzoom", rapidjson::Value(sharedData.config.endZoom), document.GetAllocator());
+	document.AddMember("vector_layers", layers.serialiseToJSONValue(document.GetAllocator()), document.GetAllocator());
+
+	auto fp = std::fopen((sharedData.outputFile + "/metadata.json").c_str(), "w");
+
+	char writeBuffer[65536];
+	rapidjson::FileWriteStream os(fp, writeBuffer, sizeof(writeBuffer));
+	rapidjson::Writer<rapidjson::FileWriteStream> writer(os);
+	document.Accept(writer);
+
+	fclose(fp);
+}
+
+void generate_from_index(OSMStore &osmStore, PbfReaderOutput *output)
+{
+	PbfReaderOutput::tag_map_t currentTags;
+
+	std::cout << "Generate from index file" << std::endl;
+	for(std::size_t i = 0; i < osmStore.total_pbf_node_entries(); ++i) {
+		if((i + 1) % 10000 == 0) {
+			cout << "Generating node " << (i + 1) << " / " << osmStore.total_pbf_node_entries() << "        \r";
+			cout.flush();
+		}
+		auto const &entry = osmStore.pbf_node_entry(i);
+
+		currentTags.clear();
+		for(auto const &i: entry.tags) {
+			currentTags.emplace(std::piecewise_construct,
+				std::forward_as_tuple(i.first.begin(), i.first.end()), 
+				std::forward_as_tuple(i.second.begin(), i.second.end()));
+		}
+
+		output->setNode(entry.nodeId, entry.node, currentTags);
+	}
+
+	for(std::size_t i = 0; i < osmStore.total_pbf_way_entries(); ++i) {
+		if((i + 1) % 10000 == 0) {
+			cout << "Generating way " << (i + 1) << " / " <<  osmStore.total_pbf_way_entries()<< "        \r";
+			cout.flush();
+		}
+
+		auto const &entry = osmStore.pbf_way_entry(i);
+
+		currentTags.clear();
+		for(auto const &i: entry.tags) {
+			currentTags.emplace(std::piecewise_construct,
+				std::forward_as_tuple(i.first.begin(), i.first.end()), 
+				std::forward_as_tuple(i.second.begin(), i.second.end()));
+		}
+
+		output->setWay(entry.wayId, entry.nodeVecHandle, currentTags);
+	}
+
+	for(std::size_t i = 0; i < osmStore.total_pbf_relation_entries(); ++i) {
+		if((i + 1) == osmStore.total_pbf_relation_entries() || ((i + 1) % 100 == 0)) {
+			cout << "Generating relation " << (i + 1) << " / " << osmStore.total_pbf_relation_entries() << "        \r";
+			cout.flush();
+		}
+
+		auto const &entry = osmStore.pbf_relation_entry(i);
+
+		currentTags.clear();
+		for(auto const &i: entry.tags) {
+			currentTags.emplace(std::piecewise_construct,
+				std::forward_as_tuple(i.first.begin(), i.first.end()), 
+				std::forward_as_tuple(i.second.begin(), i.second.end()));
+		}
+
+		output->setRelation(entry.relationId, entry.relationHandle, currentTags);
+	}
+}
+
 /**
  *\brief The Main function is responsible for command line processing, loading data and starting worker threads.
  *
@@ -70,7 +188,6 @@ bool verbose = false;
 int main(int argc, char* argv[]) {
 
 	// ----	Read command-line options
-	
 	vector<string> inputFiles;
 	string luaFile;
 	string osmStoreFile;
@@ -78,21 +195,23 @@ int main(int argc, char* argv[]) {
 	string jsonFile;
 	uint threadNum;
 	string outputFile;
-	bool _verbose = false, sqlite= false, combineSimilarObjs = false, mergeSqlite = false, mapsplit = false;
+	bool _verbose = false, sqlite= false, mergeSqlite = false, mapsplit = false, osmStoreCompact = false;
+	bool index;
 
 	po::options_description desc("tilemaker (c) 2016-2020 Richard Fairhurst and contributors\nConvert OpenStreetMap .pbf files into vector tiles\n\nAvailable options");
 	desc.add_options()
 		("help",                                                                 "show help message")
 		("input",  po::value< vector<string> >(&inputFiles),                     "source .osm.pbf file")
 		("output", po::value< string >(&outputFile),                             "target directory or .mbtiles/.sqlite file")
+		("index",  po::bool_switch(&index),                                      "generate an index file from the specified input file")
 		("merge"  ,po::bool_switch(&mergeSqlite),                                "merge with existing .mbtiles (overwrites otherwise)")
 		("config", po::value< string >(&jsonFile)->default_value("config.json"), "config JSON file")
 		("process",po::value< string >(&luaFile)->default_value("process.lua"),  "tag-processing Lua file")
-		("store",  po::value< string >(&osmStoreFile)->default_value("osm_store.dat"),  "temporary storage for node/ways/relations data")
+		("store",  po::value< string >(&osmStoreFile),  "temporary storage for node/ways/relations data")
+		("compact",  po::bool_switch(&osmStoreCompact),  "Use 32bits NodeIDs and reduce overall memory usage (compact mode).\nThis requires the input to be renumbered and the init-store to be configured")
 		("init-store",  po::value< string >(&osmStoreSettings)->default_value("20:5"),  "initial number of millions of entries for the nodes (20M) and ways (5M)")
 		("verbose",po::bool_switch(&_verbose),                                   "verbose error output")
-		("threads",po::value< uint >(&threadNum)->default_value(0),              "number of threads (automatically detected if 0)")
-		("combine",po::bool_switch(&combineSimilarObjs),                         "combine similar objects (reduces output size but takes considerably longer)");
+		("threads",po::value< uint >(&threadNum)->default_value(0),              "number of threads (automatically detected if 0)");
 	po::positional_options_description p;
 	p.add("input", -1);
 	po::variables_map vm;
@@ -112,9 +231,6 @@ int main(int argc, char* argv[]) {
 	if (threadNum == 0) { threadNum = max(thread::hardware_concurrency(), 1u); }
 	verbose = _verbose;
 
-	#ifdef COMPACT_NODES
-	cout << "tilemaker compiled without 64-bit node support, use 'osmium renumber' first if working with OpenStreetMap-sourced data" << endl;
-	#endif
 
 	// ---- Check config
 	
@@ -169,7 +285,6 @@ int main(int argc, char* argv[]) {
 		fclose(fp);
 
 		config.readConfig(jsonConfig, hasClippingBox, clippingBox);
-		config.combineSimilarObjs = combineSimilarObjs;
 	} catch (...) {
 		cerr << "Couldn't find expected details in JSON file." << endl;
 		return -1;
@@ -197,14 +312,32 @@ int main(int argc, char* argv[]) {
 	}
 
 	// For each tile, objects to be used in processing
-    OSMStore osmStore(osmStoreFile, storeNodesSize * 1000000, storeWaysSize * 1000000);
+	std::unique_ptr<OSMStore> osmStore;
+	if(osmStoreCompact) {
+		std:: cout << "\nImportant: Tilemaker running in compact mode.\nUse 'osmium renumber' first if working with OpenStreetMap-sourced data,\ninitialize the init store to the highest NodeID that is stored in the input file.\n" << std::endl;
+   		osmStore.reset(new OSMStoreImpl<NodeStoreCompact>());
+	} else {
+   		osmStore.reset(new OSMStoreImpl<NodeStore>());
+	}
+
+	std::string indexfilename = inputFiles[0] + ".idx";
+	if(index) { 
+		std::cout << "Writing index to file: " << indexfilename << std::endl;
+		osmStore->open(indexfilename, true);
+	} else if(!osmStoreFile.empty()) {
+		std::cout << "Using osm store file: " << osmStoreFile << std::endl;
+		osmStore->open(osmStoreFile, true);
+	}
+
+   	osmStore->reserve(storeNodesSize * 1000000, storeWaysSize * 1000000);
+
 	AttributeStore attributeStore;
 
 	class OsmMemTiles osmMemTiles(config.baseZoom);
-	class ShpMemTiles shpMemTiles(osmStore, config.baseZoom);
+	class ShpMemTiles shpMemTiles(*osmStore, config.baseZoom);
 	class LayerDefinition layers(config.layers);
 
-	OsmLuaProcessing osmLuaProcessing(osmStore, config, layers, luaFile, 
+	OsmLuaProcessing osmLuaProcessing(osmStore.get(), *osmStore, config, layers, luaFile, 
 		shpMemTiles, osmMemTiles, attributeStore);
 
 	// ---- Load external shp files
@@ -234,34 +367,53 @@ int main(int argc, char* argv[]) {
 
 	// ----	Read all PBFs
 	
-	class PbfReader pbfReader;
+	PbfReader pbfReader(*osmStore);
 	pbfReader.output = &osmLuaProcessing;
-	if (!mapsplit) {
-		for (auto inputFile : inputFiles) {
-			cout << "Reading .pbf " << inputFile << endl;
-			
-			ifstream infile(inputFile, ios::in | ios::binary);
-			if (!infile) { cerr << "Couldn't open .pbf file " << inputFile << endl; return -1; }
 
-			int ret = pbfReader.ReadPbfFile(infile, nodeKeys);
-			if (ret != 0) return ret;
+	std::unique_ptr<PbfIndexWriter> indexWriter;
+
+	if(index) {
+		std::cout << "Generating index file " << std::endl;
+		indexWriter.reset(new PbfIndexWriter(*osmStore));
+		pbfReader.output = indexWriter.get();
+	}
+
+	if (!mapsplit) {
+		if(!index && boost::filesystem::exists(indexfilename)) {
+			std::unique_ptr<OSMStore> indexStore;
+			if(osmStoreCompact)
+	   			indexStore.reset(new OSMStoreImpl<NodeStoreCompact>());
+			else
+   				indexStore.reset(new OSMStoreImpl<NodeStore>());
+	   		indexStore->reserve(storeNodesSize * 1000000, storeWaysSize * 1000000);
+	
+			std::cout << "Using index to generate tiles: " << indexfilename << std::endl;
+			indexStore->open(indexfilename, false);
+			osmLuaProcessing.setIndexStore(indexStore.get());
+			generate_from_index(*indexStore, &osmLuaProcessing);
+		} else {
+			
+			for (auto inputFile : inputFiles) {
+				cout << "Reading .pbf " << inputFile << endl;
+				
+				ifstream infile(inputFile, ios::in | ios::binary);
+				if (!infile) { cerr << "Couldn't open .pbf file " << inputFile << endl; return -1; }
+
+				int ret = pbfReader.ReadPbfFile(infile, nodeKeys);
+				if (ret != 0) return ret;
+			} 
 		}
+
+	}
+
+	if(index) {
+		return 0;
 	}
 
 	// ----	Initialise SharedData
 	std::vector<class TileDataSource *> sources = {&osmMemTiles, &shpMemTiles};
 
-	std::map<uint, TileData> tileData;
-	std::size_t total_tiles = 0;
-
-	for (uint zoom=config.startZoom; zoom<=config.endZoom; zoom++) {
-		tileData.emplace(std::piecewise_construct,
-				std::forward_as_tuple(zoom), 
-				std::forward_as_tuple(sources, zoom));
-		total_tiles += tileData.at(zoom).GetTilesAtZoomSize();
-	}
-
-	class SharedData sharedData(config, layers, tileData);
+	class SharedData sharedData(config, layers);
 	sharedData.outputFile = outputFile;
 	sharedData.sqlite = sqlite;
 
@@ -326,13 +478,21 @@ int main(int argc, char* argv[]) {
 		// Loop through tiles
 		uint tc = 0;
 
+		std::size_t total_tiles = 0;
+		std::map<unsigned int, TileCoordinatesSet> tile_coordinates;
 		for (uint zoom=sharedData.config.startZoom; zoom<=sharedData.config.endZoom; zoom++) {
+			tile_coordinates[zoom] = GetTileCoordinates(sources, zoom);
+			total_tiles += tile_coordinates[zoom].size();
+		}
 
-			for (TilesAtZoomIterator it = sharedData.tileData.at(zoom).GetTilesAtZoomBegin(); it != sharedData.tileData.at(zoom).GetTilesAtZoomEnd(); ++it) { 
+		for (uint zoom=sharedData.config.startZoom; zoom<=sharedData.config.endZoom; zoom++) {
+			TileCoordinatesSet const &coordinates = tile_coordinates[zoom];
+
+			for (auto it: coordinates) {
 				// If we're constrained to a source tile, check we're within it
 				if (srcZ>-1) {
-					int x = it.GetCoordinates().x / pow(2, zoom-srcZ);
-					int y = it.GetCoordinates().y / pow(2, zoom-srcZ);
+					int x = it.x / pow(2, zoom-srcZ);
+					int y = it.y / pow(2, zoom-srcZ);
 					if (x!=srcX || y!=srcY) continue;
 				}
 
@@ -340,7 +500,7 @@ int main(int argc, char* argv[]) {
 				tc++;
 
 				boost::asio::post(pool, [=, &pool, &sharedData, &osmStore, &io_mutex]() {
-					outputProc(pool, sharedData, osmStore, it, zoom);
+					outputProc(pool, sharedData, *osmStore, GetTileData(sources, it, zoom), it, zoom);
 
 					uint interval = 100;
 					if(tc % interval == 0 || tc == total_tiles) { 
@@ -358,33 +518,20 @@ int main(int argc, char* argv[]) {
 
 	// ----	Close tileset
 
-	if (sqlite) {
-		// Write mbtiles 1.3+ json object
-		sharedData.mbtiles.writeMetadata("json", layers.serialiseToJSON());
+	if (sqlite)
+		WriteSqliteMetadata(jsonConfig, sharedData, layers);
+	else 
+		WriteFileMetadata(jsonConfig, sharedData, layers);
 
-		// Write user-defined metadata
-		if (jsonConfig["settings"].HasMember("metadata")) {
-			const rapidjson::Value &md = jsonConfig["settings"]["metadata"];
-			for(rapidjson::Value::ConstMemberIterator it=md.MemberBegin(); it != md.MemberEnd(); ++it) {
-				if (it->value.IsString()) {
-					sharedData.mbtiles.writeMetadata(it->name.GetString(), it->value.GetString());
-				} else {
-					rapidjson::StringBuffer strbuf;
-					rapidjson::Writer<rapidjson::StringBuffer> writer(strbuf);
-					it->value.Accept(writer);
-					sharedData.mbtiles.writeMetadata(it->name.GetString(), strbuf.GetString());
-				}
-			}
-		}
-		sharedData.mbtiles.closeForWriting();
-	}
 	google::protobuf::ShutdownProtobufLibrary();
 
+#ifndef _MSC_VER
 	if (verbose) {
 		struct rusage r_usage;
 		getrusage(RUSAGE_SELF, &r_usage);
 		cout << "\nMemory used: " << r_usage.ru_maxrss << endl;
 	}
+#endif
 
 	cout << endl << "Filled the tileset with good things at " << sharedData.outputFile << endl;
 }

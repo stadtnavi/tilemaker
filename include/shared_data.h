@@ -21,6 +21,8 @@ struct LayerDef {
 	double simplifyLevel;
 	double simplifyLength;
 	double simplifyRatio;
+	uint filterBelow;
+	double filterArea;
 	std::string source;
 	std::vector<std::string> sourceColumns;
 	bool allSourceColumns;
@@ -40,6 +42,7 @@ public:
 	// Define a layer (as read from the .json file)
 	uint addLayer(std::string name, uint minzoom, uint maxzoom,
 			uint simplifyBelow, double simplifyLevel, double simplifyLength, double simplifyRatio, 
+			uint filterBelow, double filterArea,
 			const std::string &source,
 			const std::vector<std::string> &sourceColumns,
 			bool allSourceColumns,
@@ -47,7 +50,8 @@ public:
 			const std::string &indexName,
 			const std::string &writeTo);
 
-	std::string serialiseToJSON();
+	rapidjson::Value serialiseToJSONValue(rapidjson::Document::AllocatorType &allocator) const;
+	std::string serialiseToJSON() const;
 };
 
 ///\brief Config read from JSON to control behavior of program
@@ -56,8 +60,8 @@ class Config {
 public:
 	class LayerDefinition layers;
 	uint baseZoom, startZoom, endZoom;
-	uint mvtVersion;
-	bool includeID, compress, gzip, combineSimilarObjs;
+	uint mvtVersion, combineBelow;
+	bool includeID, compress, gzip;
 	std::string compressOpt;
 	bool clippingBoxFromJSON;
 	double minLon, minLat, maxLon, maxLat;
@@ -74,8 +78,6 @@ public:
 class SharedData {
 
 public:
-	///Number of worker threads to create
-	std::map<uint, TileData> &tileData;
 	const class LayerDefinition &layers;
 	bool sqlite;
 	MBTiles mbtiles;
@@ -83,8 +85,7 @@ public:
 
 	const class Config &config;
 
-	SharedData(const class Config &configIn, const class LayerDefinition &layers,
-		std::map<uint, TileData> &tileData);
+	SharedData(const class Config &configIn, const class LayerDefinition &layers);
 	virtual ~SharedData();
 };
 

@@ -6,12 +6,8 @@
 using namespace std;
 using namespace rapidjson;
 
-SharedData::SharedData(const class Config &configIn, const class LayerDefinition &layers,
-	std::map<uint, TileData> &tileData):
-	tileData(tileData),
-	layers(layers),
-	config(configIn) {
-
+SharedData::SharedData(const class Config &configIn, const class LayerDefinition &layers)
+	: layers(layers), config(configIn) {
 	sqlite=false;
 }
 
@@ -22,6 +18,7 @@ SharedData::~SharedData() { }
 // Define a layer (as read from the .json file)
 uint LayerDefinition::addLayer(string name, uint minzoom, uint maxzoom,
 		uint simplifyBelow, double simplifyLevel, double simplifyLength, double simplifyRatio, 
+		uint filterBelow, double filterArea,
 		const std::string &source,
 		const std::vector<std::string> &sourceColumns,
 		bool allSourceColumns,
@@ -30,6 +27,7 @@ uint LayerDefinition::addLayer(string name, uint minzoom, uint maxzoom,
 		const std::string &writeTo)  {
 
 	LayerDef layer = { name, minzoom, maxzoom, simplifyBelow, simplifyLevel, simplifyLength, simplifyRatio, 
+		filterBelow, filterArea,
 		source, sourceColumns, allSourceColumns, indexed, indexName,
 		std::map<std::string,uint>() };
 	layers.push_back(layer);
@@ -53,11 +51,8 @@ uint LayerDefinition::addLayer(string name, uint minzoom, uint maxzoom,
 	return layerNum;
 }
 
-std::string LayerDefinition::serialiseToJSON() {
-	Document document;
-	document.SetObject();
-	Document::AllocatorType& allocator = document.GetAllocator();
 
+Value LayerDefinition::serialiseToJSONValue(rapidjson::Document::AllocatorType &allocator) const {
 	Value layerArray(kArrayType);
 	for (auto it = layers.begin(); it != layers.end(); ++it) {
 		Value fieldObj(kObjectType);
@@ -78,7 +73,15 @@ std::string LayerDefinition::serialiseToJSON() {
 		layerArray.PushBack(layerObj, allocator);
 	}
 
-	document.AddMember("vector_layers", layerArray, allocator);
+	return layerArray;
+}
+
+std::string LayerDefinition::serialiseToJSON() const {
+	Document document;
+	document.SetObject();
+	Document::AllocatorType& allocator = document.GetAllocator();
+
+	document.AddMember("vector_layers", serialiseToJSONValue(allocator), allocator);
 
 	StringBuffer buffer;
 	Writer<StringBuffer> writer(buffer);
@@ -94,7 +97,7 @@ Config::Config() {
 	includeID = false, compress = true, gzip = true;
 	clippingBoxFromJSON = false;
 	baseZoom = 0;
-	combineSimilarObjs = false;
+	combineBelow = 0;
 }
 
 Config::~Config() { }
@@ -118,8 +121,7 @@ void Config::readConfig(rapidjson::Document &jsonConfig, bool &hasClippingBox, B
 #endif
 
 	compressOpt    = jsonConfig["settings"]["compress"].GetString();
-	if(jsonConfig["settings"].HasMember("combine"))
-		combineSimilarObjs = jsonConfig["settings"]["combine"].GetBool();
+	combineBelow   = jsonConfig["settings"].HasMember("combine_below") ? jsonConfig["settings"]["combine_below"].GetUint() : 0;
 	mvtVersion     = jsonConfig["settings"].HasMember("mvt_version") ? jsonConfig["settings"]["mvt_version"].GetUint() : 2;
 	projectName    = jsonConfig["settings"]["name"].GetString();
 	projectVersion = jsonConfig["settings"]["version"].GetString();
@@ -170,6 +172,8 @@ void Config::readConfig(rapidjson::Document &jsonConfig, bool &hasClippingBox, B
 		double simplifyLevel  = it->value.HasMember("simplify_level" ) ? it->value["simplify_level" ].GetDouble() : 0.01;
 		double simplifyLength = it->value.HasMember("simplify_length") ? it->value["simplify_length"].GetDouble() : 0.0;
 		double simplifyRatio  = it->value.HasMember("simplify_ratio" ) ? it->value["simplify_ratio" ].GetDouble() : 1.0;
+		int    filterBelow    = it->value.HasMember("filter_below"   ) ? it->value["filter_below"   ].GetInt()    : 0;
+		double filterArea     = it->value.HasMember("filter_area"    ) ? it->value["filter_area"    ].GetDouble() : 0.5;
 		string source = it->value.HasMember("source") ? it->value["source"].GetString() : "";
 		vector<string> sourceColumns;
 		bool allSourceColumns = false;
@@ -189,6 +193,7 @@ void Config::readConfig(rapidjson::Document &jsonConfig, bool &hasClippingBox, B
 
 		layers.addLayer(layerName, minZoom, maxZoom,
 				simplifyBelow, simplifyLevel, simplifyLength, simplifyRatio, 
+				filterBelow, filterArea,
 				source, sourceColumns, allSourceColumns, indexed, indexName,
 				writeTo);
 

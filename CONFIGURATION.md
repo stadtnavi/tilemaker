@@ -25,7 +25,7 @@ It also includes these global settings:
 * `basezoom` - the zoom level for which Tilemaker will generate tiles internally (should usually be the same as `maxzoom`)
 * `include_ids` - whether you want to store the OpenStreetMap IDs for each way/node within your vector tiles
 * `compress` - whether to compress vector tiles (Any of "gzip","deflate" or "none"(default))
-* `combine` - whether to merge adjacent geometries of the same type: reduces output size but takes longer. Default `false`. Can also be specified on the command line with the `--combine` flag.
+* `combine_below` - whether to merge adjacent linestrings of the same type: will be done at zoom levels below that specified here (e.g. `"combine_below": 14` to merge at z1-13)
 * `name`, `version` and `description` - about your project (these are written into the MBTiles file)
 * `bounding_box` (optional) - the bounding box to output, in [minlon, minlat, maxlon, maxlat] order
 * `default_view` (optional) - the default location for the client to view, in [lon, lat, zoom] order (MBTiles only)
@@ -165,7 +165,11 @@ Shapefiles are imported directly in your layer config like this:
       "source_columns": ["SAP_DESCRI"]
     }
 
-You can import attribute columns from a shapefile using the `source_columns` parameter, and they'll be available within your vector tiles just as any OSM tags that you import would be. Very limited Lua transformations are available for shapefiles: you can supply an `attribute_function` which takes a Lua table (hash) of shapefile attributes, and returns a table (hash) of the vector tile attributes to set.
+You can specify attribute columns to import using the `source_columns` parameter, and they'll be available within your vector tiles just as any OSM tags that you import would be. To import all columns, use `"source_columns": true`.
+
+Limited Lua transformations are available for shapefiles. You can supply an `attribute_function(attr,layer)` which takes a Lua table (hash) of shapefile attributes, as already filtered by `source_columns`, and the layer name. It must return a table (hash) of the vector tile attributes to set.
+
+To set the minimum zoom level at which an individual feature is rendered, use `attribute_function` to set a `_minzoom` value in your return table.
 
 Shapefiles **must** be in WGS84 projection, i.e. pure latitude/longitude. (Use ogr2ogr to reproject them if your source material is in a different projection.) They will be clipped to the bounds of the first .pbf that you import, unless you specify otherwise with a `bounding_box` setting in your JSON file.
 
