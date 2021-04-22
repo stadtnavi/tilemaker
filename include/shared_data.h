@@ -23,6 +23,7 @@ struct LayerDef {
 	double simplifyRatio;
 	uint filterBelow;
 	double filterArea;
+	uint combinePolygonsBelow;
 	std::string source;
 	std::vector<std::string> sourceColumns;
 	bool allSourceColumns;
@@ -42,7 +43,7 @@ public:
 	// Define a layer (as read from the .json file)
 	uint addLayer(std::string name, uint minzoom, uint maxzoom,
 			uint simplifyBelow, double simplifyLevel, double simplifyLength, double simplifyRatio, 
-			uint filterBelow, double filterArea,
+			uint filterBelow, double filterArea, uint combinePolygonsBelow,
 			const std::string &source,
 			const std::vector<std::string> &sourceColumns,
 			bool allSourceColumns,
@@ -72,6 +73,7 @@ public:
 	virtual ~Config();
 
 	void readConfig(rapidjson::Document &jsonConfig, bool &hasClippingBox, Box &clippingBox);
+	void enlargeBbox(double cMinLon, double cMaxLon, double cMinLat, double cMaxLat);
 };
 
 ///\brief Data used by worker threads ::outputProc to write output
@@ -80,12 +82,13 @@ class SharedData {
 public:
 	const class LayerDefinition &layers;
 	bool sqlite;
+	bool mergeSqlite;
 	MBTiles mbtiles;
 	std::string outputFile;
 
-	const class Config &config;
+	Config &config;
 
-	SharedData(const class Config &configIn, const class LayerDefinition &layers);
+	SharedData(Config &configIn, const class LayerDefinition &layers);
 	virtual ~SharedData();
 };
 

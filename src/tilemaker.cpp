@@ -246,6 +246,9 @@ int main(int argc, char* argv[]) {
 			cerr << "Couldn't remove existing file" << endl;
 			return 0;
 		}
+	} else if (mergeSqlite && !static_cast<bool>(std::ifstream(outputFile))) {
+		cout << "--merge specified but .mbtiles file doesn't already exist, ignoring" << endl;
+		mergeSqlite = false;
 	}
 
 	// ----	Read bounding box from first .pbf (if there is one) or mapsplit file
@@ -267,6 +270,7 @@ int main(int argc, char* argv[]) {
 		int ret = ReadPbfBoundingBox(inputFiles[0], minLon, maxLon, minLat, maxLat, hasClippingBox);
 		if(ret != 0) return ret;
 		if(hasClippingBox) {
+			cout << "Bounding box " << minLon << ", " << maxLon << ", " << minLat << ", " << maxLat << endl;
 			clippingBox = Box(geom::make<Point>(minLon, lat2latp(minLat)),
 			                  geom::make<Point>(maxLon, lat2latp(maxLat)));
 		}
@@ -320,7 +324,7 @@ int main(int argc, char* argv[]) {
    		osmStore.reset(new OSMStoreImpl<NodeStore>());
 	}
 
-	std::string indexfilename = inputFiles[0] + ".idx";
+	std::string indexfilename = (inputFiles.empty() ? "tilemaker" : inputFiles[0]) + ".idx";
 	if(index) { 
 		std::cout << "Writing index to file: " << indexfilename << std::endl;
 		osmStore->open(indexfilename, true);
@@ -416,22 +420,29 @@ int main(int argc, char* argv[]) {
 	class SharedData sharedData(config, layers);
 	sharedData.outputFile = outputFile;
 	sharedData.sqlite = sqlite;
+	sharedData.mergeSqlite = mergeSqlite;
 
 	// ----	Initialise mbtiles if required
 	
 	if (sharedData.sqlite) {
-		ostringstream bounds;
-		bounds << fixed << sharedData.config.minLon << "," << sharedData.config.minLat << "," << sharedData.config.maxLon << "," << sharedData.config.maxLat;
 		sharedData.mbtiles.openForWriting(&sharedData.outputFile);
 		sharedData.mbtiles.writeMetadata("name",sharedData.config.projectName);
 		sharedData.mbtiles.writeMetadata("type","baselayer");
 		sharedData.mbtiles.writeMetadata("version",sharedData.config.projectVersion);
 		sharedData.mbtiles.writeMetadata("description",sharedData.config.projectDesc);
 		sharedData.mbtiles.writeMetadata("format","pbf");
-		sharedData.mbtiles.writeMetadata("bounds",bounds.str());
 		sharedData.mbtiles.writeMetadata("minzoom",to_string(sharedData.config.startZoom));
 		sharedData.mbtiles.writeMetadata("maxzoom",to_string(sharedData.config.endZoom));
 		if (!sharedData.config.defaultView.empty()) { sharedData.mbtiles.writeMetadata("center",sharedData.config.defaultView); }
+
+		ostringstream bounds;
+		if (mergeSqlite) {
+			double cMinLon, cMaxLon, cMinLat, cMaxLat;
+			sharedData.mbtiles.readBoundingBox(cMinLon, cMaxLon, cMinLat, cMaxLat);
+			sharedData.config.enlargeBbox(cMinLon, cMaxLon, cMinLat, cMaxLat);
+		}
+		bounds << fixed << sharedData.config.minLon << "," << sharedData.config.minLat << "," << sharedData.config.maxLon << "," << sharedData.config.maxLat;
+		sharedData.mbtiles.writeMetadata("bounds",bounds.str());
 	}
 
 	// ----	Write out data
@@ -476,40 +487,45 @@ int main(int argc, char* argv[]) {
 		std::mutex io_mutex;
 
 		// Loop through tiles
-		uint tc = 0;
+		std::size_t tc = 0;
 
-		std::size_t total_tiles = 0;
-		std::map<unsigned int, TileCoordinatesSet> tile_coordinates;
+		std::deque< std::pair<unsigned int, TileCoordinates> > tile_coordinates;
 		for (uint zoom=sharedData.config.startZoom; zoom<=sharedData.config.endZoom; zoom++) {
-			tile_coordinates[zoom] = GetTileCoordinates(sources, zoom);
-			total_tiles += tile_coordinates[zoom].size();
-		}
-
-		for (uint zoom=sharedData.config.startZoom; zoom<=sharedData.config.endZoom; zoom++) {
-			TileCoordinatesSet const &coordinates = tile_coordinates[zoom];
-
-			for (auto it: coordinates) {
+			auto zoom_result = GetTileCoordinates(sources, zoom);
+			for(auto&& it: zoom_result) {
 				// If we're constrained to a source tile, check we're within it
 				if (srcZ>-1) {
 					int x = it.x / pow(2, zoom-srcZ);
 					int y = it.y / pow(2, zoom-srcZ);
 					if (x!=srcX || y!=srcY) continue;
 				}
+			
+				if (hasClippingBox) {
+					if(!boost::geometry::intersects(TileBbox(it, zoom).getTileBox(), clippingBox)) 
+						continue;
+				}
 
-				// Submit a lambda object to the pool.
-				tc++;
-
-				boost::asio::post(pool, [=, &pool, &sharedData, &osmStore, &io_mutex]() {
-					outputProc(pool, sharedData, *osmStore, GetTileData(sources, it, zoom), it, zoom);
-
-					uint interval = 100;
-					if(tc % interval == 0 || tc == total_tiles) { 
-						const std::lock_guard<std::mutex> lock(io_mutex);
-						cout << "Zoom level " << zoom << ", writing tile " << tc << " of " << total_tiles << "               \r" << std::flush;
-					}
-				});
+				tile_coordinates.push_back(std::make_pair(zoom, it));
 			}
+		}
 
+		std::size_t interval = 100;
+		for(std::size_t start_index = 0; start_index < tile_coordinates.size(); start_index += interval) {
+
+			boost::asio::post(pool, [=, &tile_coordinates, &pool, &sharedData, &osmStore, &io_mutex, &tc]() {
+				std::size_t end_index = std::min(tile_coordinates.size(), start_index + interval);
+				for(std::size_t i = start_index; i < end_index; ++i) {
+					unsigned int zoom = tile_coordinates[i].first;
+					TileCoordinates coords = tile_coordinates[i].second;
+					outputProc(pool, sharedData, *osmStore, GetTileData(sources, coords, zoom), coords, zoom);
+				}
+
+				const std::lock_guard<std::mutex> lock(io_mutex);
+				tc += (end_index - start_index); 
+
+				unsigned int zoom = tile_coordinates[end_index - 1].first;
+				cout << "Zoom level " << zoom << ", writing tile " << tc << " of " << tile_coordinates.size() << "               \r" << std::flush;
+			});
 		}
 		
 		// Wait for all tasks in the pool to complete.
